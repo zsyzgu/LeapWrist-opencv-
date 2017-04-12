@@ -4,10 +4,12 @@
 #include <cxcore.h>
 #include <cmath>
 #include <iostream>
+#include <thread>
 
 using namespace std;
 using namespace cv;
 
+const int THREAD_NUMBER = 16;
 const int MAXN = 100;
 const int MAXM = 1500;
 const int BLOCK = 40;
@@ -17,25 +19,13 @@ const int BLUR_SIZE = 3;
 const float KERNEL_KEY_COE = 0.9;
 const int EXIST_THRESHOLD = 150;
 
+int completedThread;
+mutex threadMutex;
 Mat origin, frame, blurredFrame;
 vector<Point> kernelKeys[MAXN][MAXN];
 int R, C;
 int n, m;
 int sum2[MAXM][MAXM];
-
-int calnSum(int r, int c) {
-  int sum = sum2[r + BLOCK - 1][c + BLOCK - 1];
-  if (r - 1 >= 0) {
-    sum -= sum2[r - 1][c + BLOCK - 1];
-  }
-  if (c - 1 >= 0) {
-    sum -= sum2[r + BLOCK - 1][c - 1];
-  }
-  if (r - 1 >= 0 && c - 1 >= 0) {
-    sum += sum2[r - 1][c - 1];
-  }
-  return sum;
-}
 
 Point3_<int> calnFeaturePoint(int indexR, int indexC) {
   int rBegin = indexR * BLOCK - NEIGH_R, rEnd = indexR * BLOCK + NEIGH_R;
@@ -54,7 +44,7 @@ Point3_<int> calnFeaturePoint(int indexR, int indexC) {
           int kc = keys[i].x;
           value += blurredFrame.at<uchar>(r + kr, c + kc);
         }
-        int sum = calnSum(r, c);
+        int sum = sum2[r][c];
         
         if (value / sum > maxAve) {
           maxAve = value / sum;
@@ -106,18 +96,46 @@ void initOrigin() {
   }
 }
 
-void initFrame() {
+void calnSum2() {
   for (int r = 0; r < n; r++) {
-    int sum1 = 0;
+    sum2[r + 1][0] = 0;
     for (int c = 0; c < m; c++) {
-      sum1 += blurredFrame.at<uchar>(r, c);
-      sum2[r][c] = sum1;
-      if (r - 1 >= 0) {
-        sum2[r][c] += sum2[r - 1][c];
-      }
+      sum2[r + 1][c + 1] = sum2[r + 1][c] + blurredFrame.at<uchar>(r, c);
+    }
+    for (int c = 0; c + BLOCK <= m; c++) {
+      sum2[r + 1][c] = sum2[r + 1][c + BLOCK] - sum2[r + 1][c];
+    }
+  }
+
+  for (int c = 0; c < m; c++) {
+    sum2[0][c] = 0;
+    for (int r = 0; r < n; r++) {
+      sum2[r + 1][c] += sum2[r][c];
+    }
+    for (int r = 0; r + BLOCK <= n; r++) {
+      sum2[r][c] = sum2[r + BLOCK][c] - sum2[r][c];
     }
   }
 }
+
+void subThread(int tid) {
+  assert(R * C % THREAD_NUMBER == 0);
+
+  int size = R * C / THREAD_NUMBER;
+  for (int i = tid * size; i < (tid + 1) * size; i++) {
+    int r = i / C;
+    int c = i % C;
+    Point3_<int> point = calnFeaturePoint(r, c);
+    if (point.z >= EXIST_THRESHOLD) {
+      circle(frame, Point(point.x, point.y), 3, 255, 2);
+    }
+  }
+
+  threadMutex.lock();
+  completedThread++;
+  threadMutex.unlock();
+}
+
 
 int main()
 {
@@ -125,17 +143,30 @@ int main()
   frame = imread("2.jpg", 0);
   assert(origin.rows == frame.rows && origin.cols == frame.cols);
   initOrigin();
-  
+
+  float beginClock = getTickCount();
+
   GaussianBlur(frame, blurredFrame, Size(BLUR_SIZE, BLUR_SIZE), 0);
-  initFrame();
-  for (int r = 0; r < R; r++) {
-    for (int c = 0; c < C; c++) {
-      Point3_<int> point = calnFeaturePoint(r, c);
-      if (point.z >= EXIST_THRESHOLD) {
-        circle(frame, Point(point.x, point.y), 3, 255, 2);
-      }
+  calnSum2();
+  completedThread = 0;
+  for (int tid = 0; tid < THREAD_NUMBER; tid++) {
+    thread t(&subThread, tid);
+    if (tid == THREAD_NUMBER - 1) {
+      t.join();
+    } else {
+      t.detach();
     }
   }
+  while(true) {
+    threadMutex.lock();
+    if (completedThread == THREAD_NUMBER) {
+      threadMutex.unlock();
+      break;
+    }
+    threadMutex.unlock();
+  }
+
+  cout << (float)(getTickCount() - beginClock) / 1e9 << endl;
 
   imshow("window", frame);
   waitKey(0);
