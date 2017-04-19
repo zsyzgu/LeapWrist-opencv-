@@ -15,8 +15,9 @@ const int MAXM = 1000;
 const int BLOCK = 40;
 const int NEIGH_R = 30;
 const int NEIGH_C = 30;
-const int BLUR_SIZE = 3;
-const float KERNEL_KEY_COE = 0.9;
+const int BLUR_SIZE = 5;
+const float KERNEL_KEY_COE = 0.8;
+const int KERNEL_DIST = 3;
 const int EXIST_THRESHOLD = 150;
 
 int completedThread;
@@ -70,19 +71,38 @@ vector<Point> getKernelKeys(int indexR, int indexC) {
     }
   }
   int threshold = maxValue * KERNEL_KEY_COE;
+
   vector<Point> kernelKeys;
-  for (int r = 0; r < BLOCK; r++) {
-    for (int c = 0; c < BLOCK; c++) {
-      int value = origin.at<uchar>(rBegin + r, cBegin + c);
+  for (int r = rBegin; r < rEnd; r++) {
+    for (int c = cBegin; c < cEnd; c++) {
+      int value = origin.at<uchar>(r, c);
       if (value >= threshold) {
-        if (r - 1 >= 0 && origin.at<uchar>(r - 1, c) > value) continue;
-        if (r + 1 <  n && origin.at<uchar>(r + 1, c) > value) continue;
-        if (c - 1 >= 0 && origin.at<uchar>(r, c - 1) > value) continue;
-        if (c + 1 <  m && origin.at<uchar>(r, c + 1) > value) continue;
-        kernelKeys.push_back(Point(c, r));
+        bool flag = true;
+        for (int dr = -KERNEL_DIST; dr <= KERNEL_DIST; dr++) {
+          for (int dc = -KERNEL_DIST; dc <= KERNEL_DIST; dc++) {
+            if (dr == 0 && dc == 0) {
+              continue;
+            }
+            if (0 <= r + dr && r + dr < n && 0 <= c + dc && c + dc < m) {
+              if (dr < 0 || (dr == 0 && dc < 0)) {
+                if (origin.at<uchar>(r + dr, c + dc) >= value) {
+                  flag = false;
+                }
+              } else {
+                if (origin.at<uchar>(r + dr, c + dc) > value) {
+                  flag = false;
+                }
+              }
+            }
+          }
+        }
+        if (flag) {
+          kernelKeys.push_back(Point(c - cBegin, r - rBegin));
+        }
       }
     }
   }
+
   return kernelKeys;
 }
 
@@ -125,12 +145,12 @@ void subThread(int tid) {
   threadMutex.unlock();
 }
 
-Mat getOrigin() {
-  return imread("origin.jpg", 0);
+Mat getOrigin(bool color = false) {
+  return imread("origin.jpg", color);
 }
 
-Mat getFrame() {
-  return imread("frame.jpg", 0);
+Mat getFrame(bool color = false) {
+  return imread("frame.jpg", color);
 }
 
 void start() {
@@ -149,8 +169,8 @@ void start() {
 
 void update() {
   frame = getFrame();
-
   GaussianBlur(frame, frame, Size(BLUR_SIZE, BLUR_SIZE), 0);
+
   calnBlockSum();
   completedThread = 0;
   for (int tid = 0; tid < THREAD_NUMBER; tid++) {
@@ -172,9 +192,26 @@ void update() {
 }
 
 void output() {
+  frame = getFrame(true);
   for (int r = 0; r < R; r++) {
     for (int c = 0; c < C; c++) {
-      circle(frame, result[r][c], 3, 255, 2);
+      if (result[r][c] != Point(0, 0)) {
+        circle(frame, result[r][c], 3, Scalar(255, 0, 0), 2);
+      }
+    }
+  }
+  for (int r = 0; r < R; r++) {
+    for (int c = 0; c + 1 < C; c++) {
+      if (result[r][c] != Point(0, 0) && result[r][c + 1] != Point(0, 0)) {
+        line(frame, result[r][c], result[r][c + 1], Scalar(0, 255, 0), 2);
+      }
+    }
+  }
+  for (int r = 0; r + 1 < R; r++) {
+    for (int c = 0; c < C; c++) {
+      if (result[r][c] != Point(0, 0) && result[r + 1][c] != Point(0, 0)) {
+        line(frame, result[r][c], result[r + 1][c], Scalar(0, 0, 255), 2);
+      }
     }
   }
 
