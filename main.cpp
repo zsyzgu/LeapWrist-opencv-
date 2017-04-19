@@ -9,16 +9,16 @@
 using namespace std;
 using namespace cv;
 
-const int THREAD_NUMBER = 16;
-const int MAXN = 100;
-const int MAXM = 1000;
-const int BLOCK = 40;
-const int NEIGH_R = 30;
+const int THREAD_NUMBER = 1;
+const int MAXN = 50;
+const int BLOCK = 20;
+const int NEIGH_R = 10;
 const int NEIGH_C = 30;
 const int BLUR_SIZE = 5;
-const float KERNEL_KEY_COE = 0.8;
-const int KERNEL_DIST = 3;
-const int EXIST_THRESHOLD = 150;
+const int KERNEL_DIST = 2;
+const int EXIST_THRESHOLD = 0;
+const int ORIGIN_KERNEL_THRESHOLD = 200;
+const int FRAME_KERNEL_THRESHOLD = 50;
 
 int completedThread;
 mutex threadMutex;
@@ -26,7 +26,6 @@ Mat origin, frame;
 vector<Point> kernelKeys[MAXN][MAXN];
 int R, C;
 int n, m;
-int blockSum[MAXM][MAXM];
 Point result[MAXN][MAXN];
 
 Point3_<int> calnFeaturePoint(int indexR, int indexC) {
@@ -46,12 +45,10 @@ Point3_<int> calnFeaturePoint(int indexR, int indexC) {
           int kc = keys[i].x;
           value += frame.at<uchar>(r + kr, c + kc);
         }
-        int z = value / keys.size();
-        value = value / blockSum[r][c];
         
         if (value > maxValue) {
           maxValue = value;
-          ret = Point3_<int>(c + BLOCK / 2, r + BLOCK / 2, z);
+          ret = Point3_<int>(c + BLOCK / 2, r + BLOCK / 2, value / keys.size());
         }
       }
     }
@@ -60,22 +57,12 @@ Point3_<int> calnFeaturePoint(int indexR, int indexC) {
   return ret;
 }
 
-vector<Point> getKernelKeys(int indexR, int indexC) {
-  int rBegin = indexR * BLOCK, rEnd = rBegin + BLOCK;
-  int cBegin = indexC * BLOCK, cEnd = cBegin + BLOCK;
-
-  uchar maxValue = 0;
-  for (int r = rBegin; r < rEnd; r++) {
-    for (int c = cBegin; c < cEnd; c++) {
-      maxValue = max(maxValue, origin.at<uchar>(r, c));
-    }
-  }
-  int threshold = maxValue * KERNEL_KEY_COE;
-
+vector<Point> getKernelKeys(Mat& image, int threshold) {
   vector<Point> kernelKeys;
-  for (int r = rBegin; r < rEnd; r++) {
-    for (int c = cBegin; c < cEnd; c++) {
-      int value = origin.at<uchar>(r, c);
+
+  for (int r = 0; r < n; r++) {
+    for (int c = 0; c < m; c++) {
+      int value = image.at<uchar>(r, c);
       if (value >= threshold) {
         bool flag = true;
         for (int dr = -KERNEL_DIST; dr <= KERNEL_DIST; dr++) {
@@ -85,11 +72,11 @@ vector<Point> getKernelKeys(int indexR, int indexC) {
             }
             if (0 <= r + dr && r + dr < n && 0 <= c + dc && c + dc < m) {
               if (dr < 0 || (dr == 0 && dc < 0)) {
-                if (origin.at<uchar>(r + dr, c + dc) >= value) {
+                if (image.at<uchar>(r + dr, c + dc) >= value) {
                   flag = false;
                 }
               } else {
-                if (origin.at<uchar>(r + dr, c + dc) > value) {
+                if (image.at<uchar>(r + dr, c + dc) > value) {
                   flag = false;
                 }
               }
@@ -97,7 +84,7 @@ vector<Point> getKernelKeys(int indexR, int indexC) {
           }
         }
         if (flag) {
-          kernelKeys.push_back(Point(c - cBegin, r - rBegin));
+          kernelKeys.push_back(Point(c, r));
         }
       }
     }
@@ -106,26 +93,25 @@ vector<Point> getKernelKeys(int indexR, int indexC) {
   return kernelKeys;
 }
 
-void calnBlockSum() {
+Mat getFeatureImage(Mat& image, int threshold) {
+  vector<Point> keys = getKernelKeys(image, threshold);
+  Mat ret = image;
+
   for (int r = 0; r < n; r++) {
-    blockSum[r + 1][0] = 0;
     for (int c = 0; c < m; c++) {
-      blockSum[r + 1][c + 1] = blockSum[r + 1][c] + frame.at<uchar>(r, c);
-    }
-    for (int c = 0; c + BLOCK <= m; c++) {
-      blockSum[r + 1][c] = blockSum[r + 1][c + BLOCK] - blockSum[r + 1][c];
+      ret.at<uchar>(r, c) = 0;
     }
   }
 
-  for (int c = 0; c < m; c++) {
-    blockSum[0][c] = 0;
-    for (int r = 0; r < n; r++) {
-      blockSum[r + 1][c] += blockSum[r][c];
-    }
-    for (int r = 0; r + BLOCK <= n; r++) {
-      blockSum[r][c] = blockSum[r + BLOCK][c] - blockSum[r][c];
-    }
+  for (int i = 0; i < keys.size(); i++) {
+    int c = keys[i].x;
+    int r = keys[i].y;
+    circle(ret, keys[i], 0, 255, 2);
   }
+
+  GaussianBlur(ret, ret, Size(BLUR_SIZE, BLUR_SIZE), 0);
+
+  return ret;
 }
 
 void subThread(int tid) {
@@ -146,11 +132,11 @@ void subThread(int tid) {
 }
 
 Mat getOrigin(bool color = false) {
-  return imread("origin.jpg", color);
+  return imread("origin2.jpg", color);
 }
 
 Mat getFrame(bool color = false) {
-  return imread("frame.jpg", color);
+  return imread("frame2.jpg", color);
 }
 
 void start() {
@@ -160,18 +146,27 @@ void start() {
   m = origin.cols;
   R = n / BLOCK;
   C = m / BLOCK;
-  for (int r = 0; r < R; r++) {
-    for (int c = 0; c < C; c++) {
-      kernelKeys[r][c] = getKernelKeys(r, c);
-    }
+
+  vector<Point> keys = getKernelKeys(origin, ORIGIN_KERNEL_THRESHOLD);
+  for (int i = 0; i < keys.size(); i++) {
+    int c = keys[i].x;
+    int r = keys[i].y;
+    kernelKeys[r / BLOCK][c / BLOCK].push_back(Point(c % BLOCK, r % BLOCK));
   }
+
+  origin = getFeatureImage(origin, ORIGIN_KERNEL_THRESHOLD);
+  imshow("window", origin);
+  waitKey(0);
+  imwrite("_origin.jpg", origin);
 }
 
 void update() {
   frame = getFrame();
-  GaussianBlur(frame, frame, Size(BLUR_SIZE, BLUR_SIZE), 0);
+  frame = getFeatureImage(frame, FRAME_KERNEL_THRESHOLD);
+  imshow("window", frame);
+  waitKey(0);
+  imwrite("_frame.jpg", frame);
 
-  calnBlockSum();
   completedThread = 0;
   for (int tid = 0; tid < THREAD_NUMBER; tid++) {
     thread t(&subThread, tid);
@@ -193,6 +188,7 @@ void update() {
 
 void output() {
   frame = getFrame(true);
+
   for (int r = 0; r < R; r++) {
     for (int c = 0; c < C; c++) {
       if (result[r][c] != Point(0, 0)) {
